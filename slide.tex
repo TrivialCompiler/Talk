@@ -8,7 +8,7 @@
 
 \author{MashPlant 李晨昊}
 \title{TrivialCompiler技术报告}
-\date{2020年12月15日}
+\date{2020年12月22日}
 \usepackage{Tsinghua}
 
 % defs
@@ -95,12 +95,12 @@
 
 \begin{frame}{编程技巧\footnote[1]{\href{https://llvm.org/docs/HowToSetUpLLVMStyleRTTI.html}{https://llvm.org/docs/HowToSetUpLLVMStyleRTTI.html}}}
 \begin{itemize}
-  \item AST节点和IR节点都涉及大量多态，使用Visitor模式会增加代码量，也不易读
-  \item 在对象中保存一个整数值编码以判断实际类型，逻辑上与 \lstinline|dynamic_cast| 一样。这就是OOP引入Visitor模式时的反面写法，但我认为这样反而更方便，逻辑清晰，易于组合
+  \item AST节点和IR节点都涉及大量多态。C\texttt{++}原生的面向对象机制性能开销较大，在对象中保存一个整数值编码以判断实际类型，逻辑上与 \lstinline|dynamic_cast| 一样
+  \item 访问节点的时候依据类型分别处理。这就是OOP引入Visitor模式时的反面写法，但我认为这样逻辑清晰，易于组合。这种写法与Visitor模式也不冲突，各有适用之处
 \end{itemize}
 \begin{figure}[htpb]
   \centering
-  \includegraphics[width=0.4\linewidth]{pic/match.png}
+  \includegraphics[width=0.35\linewidth]{pic/match.png}
 \end{figure}
 \end{frame}
 
@@ -109,7 +109,7 @@
 \begin{frame}{各种IR}
 \begin{itemize}
   \item IR(Intermediate Representation)：介于AST和机器码之间的一层，便于进行优化，分析，解释执行等工作
-  \item IR有很多形式：基于栈的IR(Stack IR)，基于虚拟寄存器的IR(Reg IR)，SSA IR
+  \item IR有很多形式：基于栈的IR(Stack IR)，基于虚拟寄存器的IR(Reg IR)，SSA(Static Single Assignment) IR
   \begin{itemize}
     \item Stack IR：运算指令没有运算数，而是取出栈顶元素进行运算，将结果放回栈顶
     \item Reg IR：类似(RISC)汇编，有明确的操作数寄存器和目标寄存器，寄存器没有数量限制，一般一个变量对应一个寄存器
@@ -206,17 +206,34 @@ L2:
 \end{itemize}
 \end{frame}
 
-\begin{frame}{SSA IR}
+\begin{frame}[fragile]{SSA IR}
 \begin{itemize}
   \item $\phi$函数必须位于基本块的开头
-  \item $\phi\ [v_0, L_0] \ldots [v_n, L_n]$中，$L_0, \ldots, Ln$必须恰好是本基本块的所有前驱基本块
+  \item $\phi\ [v_1, L_1] \ldots [v_n, L_n]$中，$L_1, \ldots, Ln$必须恰好是本基本块的所有前驱基本块(因而实现时无需在$\phi$函数中保存基本块)
   \item 若运行时从$L_i$基本块进入本基本块，则$\phi$函数的值是$v_i$
-  \pause
   \item {\bf 一个基本块开头所有$\phi$函数同时计算}
   \begin{itemize}
-    \item 例如某基本块开头$a = \phi\ [b, L_0];\ b = \phi\ [a, L_0]$，语义是交换$a$和$b$的值，而不是都赋成$b$
+    \item 例如某基本块开头$a = \phi\ [b, L_1];\ b = \phi\ [a, L_1]$，语义是交换$a$和$b$的值，而不是都赋成$b$
   \end{itemize}
 \end{itemize}
+\begin{center}
+\begin{minipage}{0.36\textwidth}
+\begin{lstlisting}[basicstyle = \fontsize{6}{6}\ttfamily\color{BlackText}, escapeinside={(*@}{@*)}]
+L0: 
+  br L1
+L1:
+  s0 = (*@$\phi$@*) [0, L0], [s1, L2]
+  i0 = (*@$\phi$@*) [0, L0], [i1, L2]
+  cond = i0 < 100
+  br cond, L2, L3
+L2:
+  s1 = s0 + i0
+  i1 = i0 + 1
+  br L1
+L3:
+\end{lstlisting}
+\end{minipage}
+\end{center}
 \end{frame}
 
 \begin{frame}{SSA IR}
@@ -234,13 +251,13 @@ L2:
 
 \begin{frame}[fragile]{Mem2Reg}
 \begin{itemize}
-  \item 存在从AST直接生成SSA IR的方法，但我没有研究过，更常规的方法是先生成``伪''SSA IR，再通过Mem2Reg转化成真正的SSA IR
-  \item SSA IR要求一个寄存器只能有一个赋值点，但可以向一片内存写入任意多次，``伪''SSA IR就是把变量都对应到栈上的内存，而不是寄存器
+  \item 存在从AST直接生成SSA IR的方法，但我没有研究过，常规方法是生成``伪''SSA，再用Mem2Reg转化成真正的SSA
+  \item SSA要求一个寄存器只能有一个赋值点，但可以向一片内存写入任意多次，``伪''SSA中把变量都对应到栈上的内存
   \item Mem2Reg将这样的内存访问转化为寄存器访问，它是之后一切基于SSA IR的优化的基础
 \end{itemize}
 \begin{center}
-\begin{minipage}{0.30\textwidth}
-  \begin{lstlisting}[basicstyle = \fontsize{5}{5}\ttfamily\color{BlackText}, escapeinside={(*@}{@*)}]
+\begin{minipage}{0.28\textwidth}
+  \begin{lstlisting}[basicstyle = \fontsize{6}{6}\ttfamily\color{BlackText}, escapeinside={(*@}{@*)}]
 L0:
   s = alloca int
   i = alloca int
@@ -261,8 +278,8 @@ L3:
 \end{minipage}\hspace{0.5cm}
 $\Rightarrow$
 \hspace{0.4cm}
-\begin{minipage}{0.30\textwidth}
-  \begin{lstlisting}[basicstyle = \fontsize{5}{5}\ttfamily\color{BlackText}, escapeinside={(*@}{@*)}]
+\begin{minipage}{0.35\textwidth}
+  \begin{lstlisting}[basicstyle = \fontsize{6}{6}\ttfamily\color{BlackText}, escapeinside={(*@}{@*)}]
 L0:
   br L1
 L1:
@@ -282,17 +299,12 @@ L3:
 
 \begin{frame}{Mem2Reg}
 \begin{itemize}
-  \item 第一步：收集对一个变量的所有写入的基本块集合$S$，为$DF^+(S)$中的每个基本块插入$\phi$函数
-  \begin{itemize}
-    \item 基本块的支配边界DF(Dominance Frontier)：$DF(n) = \{ x | n\text{支配}x\text{的某个前驱，且}(n = x\text{或}n\text{不支配}x) \}$
-    \item 集合的支配边界：$DF(S) = \bigcup_{n \in S} DF(n)$。迭代支配边界：$DF_1(S) = DF(S);\ DF_{i + 1}(S) = DF(S \cup DF_i(S))$，迭代至收敛得到$DF^+(S)$
-    \item 直观理解：在支配边界上这个变量从不同前驱来值可能不同，所以需要插入$\phi$函数。因为$\phi$函数本身也是一次定值，需要把插入的地方也考虑进去再计算$DF$，这就是$DF^+$的意义
-    \item 实现时只计算每个基本块的$DF$，不计算$DF^+$，迭代插入$\phi$函数即可
-  \end{itemize}
+  \item 定义基本块的支配边界DF(Dominance Frontier)：$DF(n) = \{ x | n\text{支配}x\text{的某个前驱，且}(n = x\text{或}n\text{不支配}x) \}$
+  \item 集合的支配边界：$DF(S) = \bigcup_{n \in S} DF(n)$
+  \item 集合的迭代支配边界：$DF_1(S) = DF(S);\ DF_{i + 1}(S) = DF(S \cup DF_i(S))$，迭代至收敛得到$DF^+(S)$
+  \item 支配边界的高效计算用到后面提到的支配树，这里略过
 \end{itemize}
 \end{frame}
-
-
 
 \begin{frame}{Mem2Reg}
 \begin{itemize}
@@ -302,6 +314,14 @@ L3:
   \centering
   \includegraphics[width=0.8\linewidth]{pic/df.png}
 \end{figure}
+\end{frame}
+
+\begin{frame}{Mem2Reg}
+\begin{itemize}
+  \item 第一步：收集对一个变量的所有写入的基本块集合$S$，为$DF^+(S)$中的每个基本块插入$\phi$函数
+  \item 直观理解：在支配边界上这个变量从不同前驱来值可能不同，所以需要插入$\phi$函数。因为$\phi$函数本身也是一次定值，需要把插入的地方也考虑进去再计算$DF$，这就是$DF^+$的意义
+  \item 实现时只计算每个基本块的$DF$，不计算$DF^+$，迭代插入$\phi$函数即可
+\end{itemize}
 \end{frame}
 
 \begin{frame}{Mem2Reg}
@@ -334,8 +354,8 @@ L3:
 \begin{frame}{GVN \& GCM}
 \begin{itemize}
   \item 定义基本块直接支配关系$x\ idom\ y$：$x$支配$y$，且不支配任何支配$y$的其他节点
-  \item 除开始节点外每个节点恰被一个节点直接支配，这构成一棵树，称作支配树。节点在支配树中的深度称作支配深度
-  \item Mem2Reg中计算支配边界也用到支配树
+  \item 除开始节点外每个节点恰被一个节点直接支配，这构成一棵树，称作支配树
+  \item 节点在支配树中的深度称作支配深度。直观理解支配深度更大，就被更多层if语句包裹，更有可能不执行
 \end{itemize}
 \hspace{1cm}
 \begin{minipage}{0.3\linewidth}
@@ -367,8 +387,8 @@ L3:
   \item 指令选择将IR指令翻译到带有虚拟寄存器和机器寄存器的机器指令，机器寄存器用于满足调用约定等需求
   \item SSA IR中运算，访存，函数调用等指令的翻译与Reg IR类似，但指令集中一般没有$\phi$函数，需要翻译成赋值语句
   \begin{itemize}
-    \item 对于$x = \phi\ [v_0, L_0] \ldots [v_n, L_n]$，在$L_i$末尾生成$x = v_i$
-    \item 如果有多个$\phi$函数，赋值$x_0 = v_{i0}; \ldots; x_m = v_{im}$必须是并行执行的，一种实现方式是先把$v_{i0}, \ldots, v_{im}$赋给$t_0, \ldots, t_m$，再把$t_0, \ldots, t_m$赋给$x_0, \ldots, x_m$
+    \item 对于$x = \phi\ [v_1, L_1] \ldots [v_n, L_n]$，在$L_i$末尾生成$x = v_i$
+    \item 如果有多个$\phi$函数$\phi_1, ..., \phi_m$，赋值$x_1 = v_{i1}; \ldots; x_m = v_{im}$必须是并行执行的，一种实现方式是先把$v_{i1}, \ldots, v_{im}$赋给$t_1, \ldots, t_m$，再把$t_1, \ldots, t_m$赋给$x_1, \ldots, x_m$
   \end{itemize}
 \end{itemize}
 \end{frame}
